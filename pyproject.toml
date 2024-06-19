@@ -1,0 +1,10 @@
+[project]
+name = "pacmandetections"
+version = "0.1.0"
+
+[tool.setuptools]
+packages = ["pacmandetections", "pacmandetections.data"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"pacmandetections" = ["data/wrims_aphiaids.txt"]
