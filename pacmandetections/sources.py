@@ -17,6 +17,13 @@ class Occurrence:
     eventID: str
     materialSampleID: str
     establishmentMeans: str
+    occurrenceRemarks: str
+    associatedMedia: str
+    datasetID: str
+    datasetName: str
+    target_gene: str
+    DNA_sequence: str
+    identificationRemarks: str
 
     def get_day(self):
         date = dateutil.parser.isoparse(self.eventDate)
@@ -26,19 +33,19 @@ class Occurrence:
 class Source(ABC):
 
     @abstractmethod
-    def fetch(self, geometry: Geometry, start_date, end_date) -> Occurrence:
+    def fetch(self, shape: Geometry, start_date, end_date) -> Occurrence:
         pass
 
 
 class OBISSource(Source):
 
-    def fetch(self, geometry: Geometry, start_date, end_date) -> list[Occurrence]:
+    def fetch(self, shape: Geometry, start_date, end_date) -> list[Occurrence]:
 
-        required_cols = ["scientificName", "speciesid", "eventDate", "decimalLongitude", "decimalLatitude", "catalogNumber", "eventID", "materialSampleID", "establishmentMeans"]
+        required_cols = ["scientificName", "speciesid", "eventDate", "decimalLongitude", "decimalLatitude", "catalogNumber", "eventID", "materialSampleID", "establishmentMeans", "occurrenceRemarks", "associatedMedia", "datasetID", "datasetName", "target_gene", "DNAsequence", "identificationRemarks"]
 
         start_date_str = str(start_date)[0:10]
         end_date_str = str(end_date)[0:10]
-        wkt = str(geometry)
+        wkt = str(shape)
         query = occurrences.search(geometry=wkt, startdate=start_date_str, enddate=end_date_str)
         query.execute()
         occ = query.data
@@ -51,10 +58,13 @@ class OBISSource(Source):
         occ = occ[required_cols]
         occ = occ.rename(columns={"speciesid": "AphiaID"})
         occ["AphiaID"] = occ["AphiaID"].astype(int)
-        return occ.apply(lambda row: Occurrence(*row), axis=1)
+        return occ.apply(lambda row: Occurrence(*[None if pd.isna(x) else x for x in row]), axis=1)
+
+    def __str__(self):
+        return "OBIS"
 
 
 class GBIFSource(Source):
 
-    def fetch(self, geometry: Geometry, start_date, end_date) -> list[Occurrence]:
+    def fetch(self, shape: Geometry, start_date, end_date) -> list[Occurrence]:
         pass

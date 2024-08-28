@@ -1,12 +1,17 @@
 from shapely import Geometry, Polygon
 from pacmandetections.sources import Source, OBISSource, Occurrence
-from h3 import h3_to_geo_boundary
+from h3 import h3_to_geo_boundary, h3_get_resolution
 from datetime import datetime, timedelta
 import importlib.resources
 from speedy import Speedy
 import os
 import h3
 from enum import Enum
+from dataclasses import dataclass
+import json
+from pacmandetections.util import aphiaid_from_lsid
+import logging
+from termcolor import colored
 
 
 class EstablishmentMeans(Enum):
@@ -15,54 +20,107 @@ class EstablishmentMeans(Enum):
     UNCERTAIN = "uncertain"
 
 
+@dataclass
 class Detection:
 
-    def __init__(self, occurrences: list[Occurrence], establishmentMeans: EstablishmentMeans):
-        self.occurrences = occurrences
-        self.establishmentMeans = establishmentMeans
+    taxon: int
+    h3: str
+    date: str
+    occurrences: list[Occurrence]
+    establishmentMeans: EstablishmentMeans
+    area: int
+    description: str
 
     def __repr__(self):
         return f"{self.occurrences[0].scientificName} detected {self.establishmentMeans.value} on {self.occurrences[0].get_day()}"
 
+    def to_dict(self):
+        return {
+            "taxon": self.taxon,
+            "area": self.area,
+            "h3": self.h3,
+            "date": self.date,
+            "occurrences": [occurrence.__dict__ for occurrence in self.occurrences],
+            "establishmentMeans": self.establishmentMeans.value,
+            "description": self.description
+        }
+
 
 class DetectionEngine:
 
-    def __init__(self, geometry: Geometry | str, days: int = 365, sources: list[Source] = [OBISSource()], speedy_data: str = None):
+    def __init__(self, h3: Geometry | str, days: int = 365, sources: list[Source] = [OBISSource()], area: int = None, speedy_data: str = None):
 
-        if isinstance(geometry, str):
-            coords = h3_to_geo_boundary(geometry)
+        if isinstance(h3, str):
+            coords = h3_to_geo_boundary(h3)
             flipped = tuple(coord[::-1] for coord in coords)
-            geometry = Polygon(flipped)
+            self.shape = Polygon(flipped)
+        else:
+            if not isinstance(h3, Polygon):
+                raise ValueError("h3 must be a shapely Polygon or a H3 string")
+            self.shape = h3
 
-        self.geometry = geometry
+        self.h3 = h3
+        self.resolution = h3_get_resolution(h3)
         self.days = days
         self.sources = sources
+        self.area = area
         self.speedy_data = speedy_data
+
+        logging.info(f"Initializing detection engine for cell {self.h3} (resolution {self.resolution}) going back {self.days} days")
 
         self.load_wrims()
 
-    def load_wrims(self):
+    def load_wrims(self) -> None:
 
         with importlib.resources.open_text("pacmandetections.data", "wrims_aphiaids.txt") as f:
             self.aphiaids = f.readlines()
 
-    def check_establishment(self, occurrence: Occurrence):
+    def check_establishment(self, aphiaid: int) -> EstablishmentMeans:
+        logging.debug(f"Checking establishment for {aphiaid}")
 
-        sp = Speedy(h3_resolution=7, data_dir=os.path.expanduser(self.speedy_data))
-        summary = sp.get_summary(occurrence.AphiaID, resolution=5, cached=True)
-        cell = h3.geo_to_h3(occurrence.decimalLatitude, occurrence.decimalLongitude, 7)
+        sp = Speedy(h3_resolution=7, data_dir=os.path.expanduser(self.speedy_data), cache_summary=True)
+        summary = sp.get_summary(aphiaid, resolution=self.resolution, as_geopandas=False)
 
-        summary_cell = summary[summary["h3"] == cell]
+        summary_cell = summary[summary["h3"] == self.h3]
         assert len(summary_cell) <= 1
 
         if len(summary_cell) == 0:
             return EstablishmentMeans.UNCERTAIN
         elif summary_cell["introduced"].any():
             return EstablishmentMeans.INTRODUCED
-        elif summary_cell["natibe"].any():
+        elif summary_cell["native"].any():
             return EstablishmentMeans.NATIVE
         else:
             return EstablishmentMeans.UNCERTAIN
+
+    def generate_description(self, occurrence: Occurrence) -> str:
+        description = f"{occurrence.scientificName} detected on {occurrence.get_day()}"
+        if occurrence.materialSampleID is not None:
+            description += f" in material sample {occurrence.materialSampleID}"
+        if occurrence.datasetName is not None:
+            description += f", dataset {occurrence.datasetName}"
+        return description
+
+    def aphiaids_for_occurrence(self, occurrence: Occurrence) -> set[int]:
+
+        aphiaids = set([occurrence.AphiaID])
+
+        # check identificationRemarks for other possible identifications
+
+        if occurrence.identificationRemarks is not None:
+            try:
+                remarks = json.loads(occurrence.identificationRemarks)
+                if "annotations" in remarks:
+                    for annotation in remarks["annotations"]:
+                        if "method" in annotation and "identity" in annotation and annotation["method"] == "VSEARCH" and annotation["identity"] >= 0.99:
+                            if "scientificNameID" in annotation:
+                                aphiaid = aphiaid_from_lsid(annotation["scientificNameID"])
+                                if aphiaid is not None:
+                                    aphiaids.add(aphiaid)
+            except json.JSONDecodeError:
+                pass
+
+        return aphiaids
 
     def generate(self):
 
@@ -71,20 +129,57 @@ class DetectionEngine:
         start_date = end_date - timedelta(days=self.days)
 
         for source in self.sources:
-            occurrence = source.fetch(self.geometry, start_date, end_date)
-            occurrences.extend(occurrence)
-
-        # check risk
+            logging.info(f"Fetching data from {source}")
+            source_occurrences = source.fetch(self.shape, start_date, end_date)
+            logging.info(f"Found {len(source_occurrences)} species occurrences between {start_date} and {end_date}")
+            occurrences.extend(source_occurrences)
 
         detections = {}
 
+        # get unique aphiaids across all occurrences
+
+        all_aphiaids = set()
+
         for occurrence in occurrences:
-            establishment = self.check_establishment(occurrence)
-            if establishment == EstablishmentMeans.INTRODUCED or establishment == EstablishmentMeans.UNCERTAIN:
-                detection_key = f"{occurrence.AphiaID}_{occurrence.get_day()}"
-                if detection_key not in detections:
-                    detections[detection_key] = Detection(occurrences=[occurrence], establishmentMeans=establishment)
-                else:
-                    detections[detection_key].occurrences.append(occurrence)
+            all_aphiaids.update(self.aphiaids_for_occurrence(occurrence))
+
+        logging.info(f"Found {len(all_aphiaids)} AphiaIDs in occurrence data")
+
+        # check establishmentMeans for each aphiaid
+
+        establishments = dict()
+
+        for i, aphiaid in enumerate(all_aphiaids):
+            logging.info(colored(f"Checking establishment for AphiaID {aphiaid} ({i + 1} / {len(all_aphiaids)})", "green"))
+            establishments[aphiaid] = self.check_establishment(aphiaid)
+
+        # populate detections
+
+        for occurrence in occurrences:
+
+            aphiaids = self.aphiaids_for_occurrence(occurrence)
+
+            # check establishmentMeans
+
+            for i, aphiaid in enumerate(aphiaids):
+
+                establishment = self.check_establishment(aphiaid, occurrence)
+
+                # TODO: rewrite below
+
+                if establishment == EstablishmentMeans.INTRODUCED or establishment == EstablishmentMeans.UNCERTAIN:
+                    detection_key = f"{aphiaid}_{occurrence.get_day()}"
+                    if detection_key not in detections:
+                        detections[detection_key] = Detection(
+                            taxon=aphiaid,
+                            h3=self.h3,
+                            date=occurrence.get_day(),
+                            occurrences=[occurrence],
+                            establishmentMeans=establishment,
+                            area=self.area,
+                            description=self.generate_description(occurrence)
+                        )
+                    else:
+                        detections[detection_key].occurrences.append(occurrence)
 
         return [detection for detection in detections.values()]
