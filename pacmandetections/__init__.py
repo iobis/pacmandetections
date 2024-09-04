@@ -24,15 +24,22 @@ class EstablishmentMeans(Enum):
 class Detection:
 
     taxon: int
+    scientificName: str
     h3: str
     date: str
     occurrences: list[Occurrence]
     establishmentMeans: EstablishmentMeans
     area: int
-    description: str
 
     def __repr__(self):
-        return f"{self.occurrences[0].scientificName} detected {self.establishmentMeans.value} on {self.occurrences[0].get_day()}"
+        description = f"{self.scientificName} detected {self.establishmentMeans.value} on {self.occurrences[0].get_day()}"
+        if len(self.occurrences) > 0:
+            occurrence = self.occurrences[0]
+            if occurrence.materialSampleID is not None:
+                description += f" in material sample {occurrence.materialSampleID}"
+            if occurrence.datasetName is not None:
+                description += f", dataset {occurrence.datasetName}"
+        return description
 
     def to_dict(self):
         return {
@@ -42,7 +49,7 @@ class Detection:
             "date": self.date,
             "occurrences": [occurrence.__dict__ for occurrence in self.occurrences],
             "establishmentMeans": self.establishmentMeans.value,
-            "description": self.description
+            "description": self.__repr__()
         }
 
 
@@ -73,7 +80,8 @@ class DetectionEngine:
     def load_wrims(self) -> None:
 
         with importlib.resources.open_text("pacmandetections.data", "wrims_aphiaids.txt") as f:
-            self.aphiaids = f.readlines()
+            lines = [line.strip().split("\t") for line in f.readlines()]
+            self.wrims = {int(line[0].strip()): line[1] for line in lines}
 
     def check_establishment(self, aphiaid: int) -> EstablishmentMeans:
         logging.debug(f"Checking establishment for {aphiaid}")
@@ -92,14 +100,6 @@ class DetectionEngine:
             return EstablishmentMeans.NATIVE
         else:
             return EstablishmentMeans.UNCERTAIN
-
-    def generate_description(self, occurrence: Occurrence) -> str:
-        description = f"{occurrence.scientificName} detected on {occurrence.get_day()}"
-        if occurrence.materialSampleID is not None:
-            description += f" in material sample {occurrence.materialSampleID}"
-        if occurrence.datasetName is not None:
-            description += f", dataset {occurrence.datasetName}"
-        return description
 
     def aphiaids_for_occurrence(self, occurrence: Occurrence) -> set[int]:
 
@@ -145,6 +145,10 @@ class DetectionEngine:
 
         logging.info(f"Found {len(all_aphiaids)} AphiaIDs in occurrence data")
 
+        # only keep WRiMS aphiaids
+
+        all_aphiaids = all_aphiaids.intersection(self.wrims)
+
         # check establishmentMeans for each aphiaid
 
         establishments = dict()
@@ -162,24 +166,23 @@ class DetectionEngine:
             # check establishmentMeans
 
             for i, aphiaid in enumerate(aphiaids):
+                if aphiaid in all_aphiaids:
 
-                establishment = self.check_establishment(aphiaid, occurrence)
+                    establishment = establishments[aphiaid]
 
-                # TODO: rewrite below
-
-                if establishment == EstablishmentMeans.INTRODUCED or establishment == EstablishmentMeans.UNCERTAIN:
-                    detection_key = f"{aphiaid}_{occurrence.get_day()}"
-                    if detection_key not in detections:
-                        detections[detection_key] = Detection(
-                            taxon=aphiaid,
-                            h3=self.h3,
-                            date=occurrence.get_day(),
-                            occurrences=[occurrence],
-                            establishmentMeans=establishment,
-                            area=self.area,
-                            description=self.generate_description(occurrence)
-                        )
-                    else:
-                        detections[detection_key].occurrences.append(occurrence)
+                    if establishment == EstablishmentMeans.INTRODUCED or establishment == EstablishmentMeans.UNCERTAIN:
+                        detection_key = f"{aphiaid}_{occurrence.get_day()}"
+                        if detection_key not in detections:
+                            detections[detection_key] = Detection(
+                                taxon=aphiaid,
+                                scientificName=self.wrims[aphiaid],
+                                h3=self.h3,
+                                date=occurrence.get_day(),
+                                occurrences=[occurrence],
+                                establishmentMeans=establishment,
+                                area=self.area
+                            )
+                        else:
+                            detections[detection_key].occurrences.append(occurrence)
 
         return [detection for detection in detections.values()]
