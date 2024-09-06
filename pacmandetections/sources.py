@@ -1,43 +1,12 @@
 from shapely import Geometry
-from abc import ABC, abstractmethod
 from pyobis import occurrences
-from dataclasses import dataclass
 import pandas as pd
-import dateutil.parser
+from pacmandetections.model import Occurrence, Source
+import requests
+from typing import Generator
 
 
-@dataclass
-class Occurrence:
-    scientificName: str
-    AphiaID: int
-    eventDate: str
-    decimalLongitude: float
-    decimalLatitude: float
-    catalogNumber: str
-    eventID: str
-    materialSampleID: str
-    establishmentMeans: str
-    occurrenceRemarks: str
-    associatedMedia: str
-    datasetID: str
-    datasetName: str
-    target_gene: str
-    DNA_sequence: str
-    identificationRemarks: str
-
-    def get_day(self):
-        date = dateutil.parser.isoparse(self.eventDate)
-        return date.strftime("%Y-%m-%d")
-
-
-class Source(ABC):
-
-    @abstractmethod
-    def fetch(self, shape: Geometry, start_date, end_date) -> Occurrence:
-        pass
-
-
-class OBISSource(Source):
+class PyOBISSource(Source):
 
     def fetch(self, shape: Geometry, start_date, end_date) -> list[Occurrence]:
 
@@ -61,7 +30,60 @@ class OBISSource(Source):
         return occ.apply(lambda row: Occurrence(*[None if pd.isna(x) else x for x in row]), axis=1)
 
     def __str__(self):
-        return "OBIS"
+        return "OBIS (pyobis)"
+
+
+class OBISAPISource(Source):
+
+    def fetch(self, shape: Geometry, start_date, end_date) -> Generator[Occurrence, None, None]:
+
+        start_date_str = str(start_date)[0:10]
+        end_date_str = str(end_date)[0:10]
+        wkt = str(shape)
+
+        after = 0
+
+        while True:
+            url = f"https://api.obis.org/v3/occurrence?geometry={wkt}&startdate={start_date_str}&enddate={end_date_str}&after={after}&dna=true&size=10000"
+            res = requests.get(url)
+            results = res.json()["results"]
+            if len(results) == 0:
+                break
+            species_results = [record for record in results if record.get("speciesid")]
+
+            for result in species_results:
+
+                if dnas := result.get("dna"):
+                    if len(dnas) > 0:
+                        dna = dnas[0]
+                        result["target_gene"] = dna.get("target_gene")
+                        result["DNA_sequence"] = dna.get("DNA_sequence")
+
+                occurrence = Occurrence(
+                    scientificName=result.get("scientificName"),
+                    AphiaID=result.get("speciesid"),
+                    eventDate=result.get("eventDate"),
+                    decimalLongitude=result.get("decimalLongitude"),
+                    decimalLatitude=result.get("decimalLatitude"),
+                    catalogNumber=result.get("catalogNumber"),
+                    eventID=result.get("eventID"),
+                    materialSampleID=result.get("materialSampleID"),
+                    establishmentMeans=result.get("establishmentMeans"),
+                    occurrenceRemarks=result.get("occurrenceRemarks"),
+                    associatedMedia=result.get("associatedMedia"),
+                    datasetID=result.get("datasetID"),
+                    datasetName=result.get("datasetName"),
+                    target_gene=result.get("target_gene"),
+                    DNA_sequence=result.get("DNA_sequence"),
+                    identificationRemarks=result.get("identificationRemarks")
+                )
+
+                yield occurrence
+
+            after = results[-1]["id"]
+
+    def __str__(self):
+        return "OBIS (API)"
 
 
 class GBIFSource(Source):

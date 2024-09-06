@@ -1,61 +1,20 @@
 from shapely import Geometry, Polygon
-from pacmandetections.sources import Source, OBISSource, Occurrence
 from h3 import h3_to_geo_boundary, h3_get_resolution
 from datetime import datetime, timedelta
 import importlib.resources
 from speedy import Speedy
 import os
-import h3
-from enum import Enum
-from dataclasses import dataclass
 import json
 from pacmandetections.util import aphiaid_from_lsid
 import logging
 from termcolor import colored
-
-
-class EstablishmentMeans(Enum):
-    NATIVE = "native"
-    INTRODUCED = "introduced"
-    UNCERTAIN = "uncertain"
-
-
-@dataclass
-class Detection:
-
-    taxon: int
-    scientificName: str
-    h3: str
-    date: str
-    occurrences: list[Occurrence]
-    establishmentMeans: EstablishmentMeans
-    area: int
-
-    def __repr__(self):
-        description = f"{self.scientificName} detected {self.establishmentMeans.value} on {self.occurrences[0].get_day()}"
-        if len(self.occurrences) > 0:
-            occurrence = self.occurrences[0]
-            if occurrence.materialSampleID is not None:
-                description += f" in material sample {occurrence.materialSampleID}"
-            if occurrence.datasetName is not None:
-                description += f", dataset {occurrence.datasetName}"
-        return description
-
-    def to_dict(self):
-        return {
-            "taxon": self.taxon,
-            "area": self.area,
-            "h3": self.h3,
-            "date": self.date,
-            "occurrences": [occurrence.__dict__ for occurrence in self.occurrences],
-            "establishmentMeans": self.establishmentMeans.value,
-            "description": self.__repr__()
-        }
+from pacmandetections.model import Detection, EstablishmentMeans, Source, Occurrence
+from pacmandetections.sources import OBISAPISource
 
 
 class DetectionEngine:
 
-    def __init__(self, h3: Geometry | str, days: int = 365, sources: list[Source] = [OBISSource()], area: int = None, speedy_data: str = None):
+    def __init__(self, h3: Geometry | str, days: int = 365, sources: list[Source] = [OBISAPISource()], area: int = None, speedy_data: str = None):
 
         if isinstance(h3, str):
             coords = h3_to_geo_boundary(h3)
@@ -130,7 +89,7 @@ class DetectionEngine:
 
         for source in self.sources:
             logging.info(f"Fetching data from {source}")
-            source_occurrences = source.fetch(self.shape, start_date, end_date)
+            source_occurrences = list(source.fetch(self.shape, start_date, end_date))
             logging.info(f"Found {len(source_occurrences)} species occurrences between {start_date} and {end_date}")
             occurrences.extend(source_occurrences)
 
