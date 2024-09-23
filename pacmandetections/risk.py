@@ -34,7 +34,23 @@ class RiskEngine:
         self.speedy_data = speedy_data
 
     def summarize(self, summary: pd.DataFrame, envelope: pd.DataFrame) -> pd.DataFrame:
-        envelope["thermal"] = True
+
+        # fix summary types (TODO: should be at speedy level?)
+
+        summary["native"] = summary["native"].astype("bool")
+        summary["introduced"] = summary["introduced"].astype("bool")
+        summary["uncertain"] = summary["uncertain"].astype("bool")
+
+        # handle missing envelope
+        if envelope is not None:
+            envelope["thermal"] = True
+        else:
+            envelope_columns = {
+                "h3": "string",
+                "thermal": "bool"
+            }
+            envelope = pd.DataFrame({col: pd.Series(dtype=dtype) for col, dtype in envelope_columns.items()})
+
         conn = duckdb.connect()
         conn.register("summary", summary)
         conn.register("envelope", envelope)
