@@ -130,7 +130,7 @@ class DetectionEngine:
                     establishment = establishments[aphiaid]
 
                     if establishment == EstablishmentMeans.INTRODUCED or establishment == EstablishmentMeans.UNCERTAIN:
-                        detection_key = f"{aphiaid}_{occurrence.get_day()}"
+                        detection_key = f"{aphiaid}_{occurrence.target_gene}_{occurrence.get_day()}"
                         if detection_key not in detections:
                             detections[detection_key] = Detection(
                                 taxon=aphiaid,
@@ -139,7 +139,8 @@ class DetectionEngine:
                                 date=occurrence.get_day(),
                                 occurrences=[occurrence],
                                 establishmentMeans=establishment,
-                                area=self.area
+                                area=self.area,
+                                target_gene=occurrence.target_gene
                             )
                         else:
                             detections[detection_key].occurrences.append(occurrence)

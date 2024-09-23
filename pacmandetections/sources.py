@@ -35,6 +35,9 @@ class PyOBISSource(Source):
 
 class OBISAPISource(Source):
 
+    def __init__(self):
+        self.rank = "genus"
+
     def fetch(self, shape: Geometry, start_date, end_date) -> Generator[Occurrence, None, None]:
 
         start_date_str = str(start_date)[0:10]
@@ -49,9 +52,9 @@ class OBISAPISource(Source):
             results = res.json()["results"]
             if len(results) == 0:
                 break
-            species_results = [record for record in results if record.get("speciesid")]
+            rank_results = [record for record in results if record.get(f"{self.rank}id")]
 
-            for result in species_results:
+            for result in rank_results:
 
                 if dnas := result.get("dna"):
                     if len(dnas) > 0:
