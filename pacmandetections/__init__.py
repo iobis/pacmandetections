@@ -8,7 +8,7 @@ import json
 from pacmandetections.util import aphiaid_from_lsid
 import logging
 from termcolor import colored
-from pacmandetections.model import Detection, EstablishmentMeans, Source, Occurrence
+from pacmandetections.model import Detection, EstablishmentMeans, Source, Occurrence, Confidence
 from pacmandetections.sources import OBISAPISource
 
 
@@ -60,9 +60,17 @@ class DetectionEngine:
         else:
             return EstablishmentMeans.UNCERTAIN
 
-    def aphiaids_for_occurrence(self, occurrence: Occurrence) -> set[int]:
+    def aphiaids_for_occurrence(self, occurrence: Occurrence) -> dict[int, Confidence]:
 
-        aphiaids = set([occurrence.AphiaID])
+        aphiaids = dict()
+
+        if occurrence.AphiaID is not None:
+            if not occurrence.target_gene:
+                aphiaids[occurrence.AphiaID] = Confidence.HIGH
+            elif occurrence.target_gene == "COI":
+                aphiaids[occurrence.AphiaID] = Confidence.MEDIUM
+            else:
+                aphiaids[occurrence.AphiaID] = Confidence.LOW
 
         # check identificationRemarks for other possible identifications
 
@@ -75,7 +83,8 @@ class DetectionEngine:
                             if "scientificNameID" in annotation:
                                 aphiaid = aphiaid_from_lsid(annotation["scientificNameID"])
                                 if aphiaid is not None:
-                                    aphiaids.add(aphiaid)
+                                    if aphiaid not in aphiaids:
+                                        aphiaids[aphiaid] = Confidence.LOW
             except json.JSONDecodeError:
                 pass
 
@@ -100,7 +109,7 @@ class DetectionEngine:
         all_aphiaids = set()
 
         for occurrence in occurrences:
-            all_aphiaids.update(self.aphiaids_for_occurrence(occurrence))
+            all_aphiaids.update(self.aphiaids_for_occurrence(occurrence).keys())
 
         logging.info(f"Found {len(all_aphiaids)} AphiaIDs in occurrence data")
 
@@ -124,7 +133,7 @@ class DetectionEngine:
 
             # check establishmentMeans
 
-            for i, aphiaid in enumerate(aphiaids):
+            for i, aphiaid in enumerate(aphiaids.keys()):
                 if aphiaid in all_aphiaids:
 
                     establishment = establishments[aphiaid]
@@ -140,7 +149,8 @@ class DetectionEngine:
                                 occurrences=[occurrence],
                                 establishmentMeans=establishment,
                                 area=self.area,
-                                target_gene=occurrence.target_gene
+                                target_gene=occurrence.target_gene,
+                                confidence=aphiaids[aphiaid]
                             )
                         else:
                             detections[detection_key].occurrences.append(occurrence)

@@ -17,6 +17,12 @@ class RiskLevel(Enum):
     HIGH = "high"
 
 
+class Confidence(Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
 @dataclass
 class Occurrence:
     scientificName: str
@@ -52,9 +58,10 @@ class Detection:
     establishmentMeans: EstablishmentMeans
     area: int
     target_gene: str
+    confidence: Confidence
 
     def __repr__(self):
-        description = f"Potential detection of {self.scientificName} with establishment {self.establishmentMeans.value} on {self.occurrences[0].get_day()}"
+        description = f"Potential detection of {self.scientificName} with confidence {self.confidence.value} and establishment {self.establishmentMeans.value} on {self.occurrences[0].get_day()}"
         if len(self.occurrences) > 0:
             occurrence = self.occurrences[0]
             if occurrence.materialSampleID is not None:
@@ -74,7 +81,8 @@ class Detection:
             "occurrences": [occurrence.__dict__ for occurrence in self.occurrences],
             "establishmentMeans": self.establishmentMeans.value,
             "target_gene": self.target_gene,
-            "description": self.__repr__()
+            "description": self.__repr__(),
+            "confidence": self.confidence.value
         }
 
 
