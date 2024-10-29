@@ -8,8 +8,10 @@ import json
 from pacmandetections.util import aphiaid_from_lsid
 import logging
 from termcolor import colored
-from pacmandetections.model import Detection, EstablishmentMeans, Source, Occurrence, Confidence
+from pacmandetections.model import Detection, EstablishmentMeans, Source, Occurrence, Confidence, Assessment, Invasiveness, Media
 from pacmandetections.sources import OBISAPISource
+from termcolor import colored
+import re
 
 
 class DetectionEngine:
@@ -42,24 +44,6 @@ class DetectionEngine:
             lines = [line.strip().split("\t") for line in f.readlines()]
             self.wrims = {int(line[0].strip()): line[1] for line in lines}
 
-    def check_establishment(self, aphiaid: int) -> EstablishmentMeans:
-        logging.debug(f"Checking establishment for {aphiaid}")
-
-        sp = Speedy(h3_resolution=7, data_dir=os.path.expanduser(self.speedy_data), cache_summary=True)
-        summary = sp.get_summary(aphiaid, resolution=self.resolution, as_geopandas=False)
-
-        summary_cell = summary[summary["h3"] == self.h3]
-        assert len(summary_cell) <= 1
-
-        if len(summary_cell) == 0:
-            return EstablishmentMeans.UNCERTAIN
-        elif summary_cell["introduced"].any():
-            return EstablishmentMeans.INTRODUCED
-        elif summary_cell["native"].any():
-            return EstablishmentMeans.NATIVE
-        else:
-            return EstablishmentMeans.UNCERTAIN
-
     def aphiaids_for_occurrence(self, occurrence: Occurrence) -> dict[int, Confidence]:
 
         aphiaids = dict()
@@ -90,6 +74,29 @@ class DetectionEngine:
 
         return aphiaids
 
+    def perform_assessment(self, aphiaid: int) -> Assessment:
+
+        establishmentMeans = None
+
+        sp = Speedy(h3_resolution=7, data_dir=os.path.expanduser(self.speedy_data), cache_summary=True)
+        summary = sp.get_summary(aphiaid, resolution=self.resolution, as_geopandas=False)
+
+        summary_cell = summary[summary["h3"] == self.h3]
+        assert len(summary_cell) <= 1
+
+        if len(summary_cell) == 0:
+            establishmentMeans = EstablishmentMeans.UNCERTAIN
+        elif summary_cell["establishmentMeans_introduced"].any():
+            establishmentMeans = EstablishmentMeans.INTRODUCED
+        elif summary_cell["establishmentMeans_native"].any():
+            establishmentMeans = EstablishmentMeans.NATIVE
+        else:
+            establishmentMeans = EstablishmentMeans.UNCERTAIN
+
+        return Assessment(
+            establishmentMeans=establishmentMeans,
+        )
+
     def generate(self):
 
         occurrences = []
@@ -99,7 +106,11 @@ class DetectionEngine:
         for source in self.sources:
             logging.info(f"Fetching data from {source}")
             source_occurrences = list(source.fetch(self.shape, start_date, end_date))
-            logging.info(f"Found {len(source_occurrences)} species occurrences between {start_date} and {end_date}")
+            if (len(source_occurrences)):
+                color = "green"
+            else:
+                color = "red"
+            logging.info(colored(f"Found {len(source_occurrences)} species occurrences between {start_date} and {end_date}", color))
             occurrences.extend(source_occurrences)
 
         detections = {}
@@ -117,13 +128,13 @@ class DetectionEngine:
 
         all_aphiaids = all_aphiaids.intersection(self.wrims)
 
-        # check establishmentMeans for each aphiaid
+        # check establishmentMeans, invasiveness, and global impact for each aphiaid
 
-        establishments = dict()
+        assessments = dict()
 
         for i, aphiaid in enumerate(all_aphiaids):
-            logging.info(colored(f"Checking establishment for AphiaID {aphiaid} ({i + 1} / {len(all_aphiaids)})", "green"))
-            establishments[aphiaid] = self.check_establishment(aphiaid)
+            logging.info(colored(f"Performing assessment for AphiaID {aphiaid} ({i + 1} / {len(all_aphiaids)})", "blue"))
+            assessments[aphiaid] = self.perform_assessment(aphiaid)
 
         # populate detections
 
@@ -136,9 +147,9 @@ class DetectionEngine:
             for i, aphiaid in enumerate(aphiaids.keys()):
                 if aphiaid in all_aphiaids:
 
-                    establishment = establishments[aphiaid]
+                    assessment = assessments[aphiaid]
 
-                    if establishment == EstablishmentMeans.INTRODUCED or establishment == EstablishmentMeans.UNCERTAIN:
+                    if assessment.establishmentMeans == EstablishmentMeans.INTRODUCED or assessment.establishmentMeans == EstablishmentMeans.UNCERTAIN:
                         detection_key = f"{aphiaid}_{occurrence.target_gene}_{occurrence.get_day()}"
                         if detection_key not in detections:
                             detections[detection_key] = Detection(
@@ -147,12 +158,23 @@ class DetectionEngine:
                                 h3=self.h3,
                                 date=occurrence.get_day(),
                                 occurrences=[occurrence],
-                                establishmentMeans=establishment,
                                 area=self.area,
                                 target_gene=occurrence.target_gene,
-                                confidence=aphiaids[aphiaid]
+                                confidence=aphiaids[aphiaid],
+                                media=None
                             )
                         else:
                             detections[detection_key].occurrences.append(occurrence)
+
+        # extract media from occurrence
+
+        for key in detections:
+            media = set()
+            for occurrence in detections[key].occurrences:
+                if occurrence.associatedMedia is not None:
+                    urls = re.findall(r'(https?://[^\s]+)', occurrence.associatedMedia)
+                    media.update(urls)
+            if len(media) > 0:
+                detections[key].media = [Media(thumbnail=url) for url in list(media)]
 
         return [detection for detection in detections.values()]

@@ -15,6 +15,7 @@ import geopandas as gpd
 import duckdb
 import pandas as pd
 import numpy as np
+import requests
 
 
 class RiskEngine:
@@ -25,7 +26,7 @@ class RiskEngine:
 
         if isinstance(shape, str):
             self.shape = from_wkt(shape)
-            # todo: handle dateline wrap
+            # TODO: handle dateline wrap
         else:
             self.shape = shape
         self.h3 = pd.DataFrame({"h3": list(polyfill(self.shape, self.resolution, geo_json=True))})
@@ -33,13 +34,18 @@ class RiskEngine:
         self.area = area
         self.speedy_data = speedy_data
 
+        self.fetch_priority_lists()
+
+    def fetch_priority_lists(self):
+
+        res = requests.get(f"http://127.0.0.1:8000/api/priority_list?area={self.area}") 
+        data = res.json()
+        taxa_ids = []
+        for entry in data:
+            taxa_ids.extend(entry["taxa"])
+        self.priority_taxa = set(taxa_ids)
+
     def summarize(self, summary: pd.DataFrame, envelope: pd.DataFrame) -> pd.DataFrame:
-
-        # fix summary types (TODO: should be at speedy level?)
-
-        summary["native"] = summary["native"].astype("bool")
-        summary["introduced"] = summary["introduced"].astype("bool")
-        summary["uncertain"] = summary["uncertain"].astype("bool")
 
         # handle missing envelope
         if envelope is not None:
@@ -63,9 +69,10 @@ class RiskEngine:
                 sum(records) as records,
                 min(min_year) as min_year,
                 max(max_year) as max_year,
-                coalesce(max(native), false) as native,
-                coalesce(max(introduced), false) as introduced,
-                coalesce(max(uncertain), false) as uncertain,
+                coalesce(max(establishmentMeans_native), false) as establishmentMeans_native,
+                coalesce(max(establishmentMeans_introduced), false) as establishmentMeans_introduced,
+                coalesce(max(invasiveness_invasive), false) as invasiveness_invasive,
+                coalesce(max(invasiveness_concern), false) as invasiveness_concern,
                 coalesce(max(thermal), false) as thermal,
             from cells
             left join envelope on envelope.h3 = cells.h3
@@ -79,7 +86,10 @@ class RiskEngine:
         sp = Speedy(h3_resolution=7, data_dir=os.path.expanduser(self.speedy_data), cache_summary=True)
         summary = sp.get_summary(aphiaid, resolution=self.resolution, as_geopandas=False)
         envelope = sp.get_thermal_envelope(aphiaid, resolution=self.resolution, as_geopandas=False)
-        result = self.summarize(summary, envelope)
+
+        aggregated = self.summarize(summary, envelope)
+        global_impact = bool(summary.invasiveness_invasive.any())
+        on_priority_list = aphiaid in self.priority_taxa
 
         risk_analysis = RiskAnalysis(
             taxon=aphiaid,
@@ -88,23 +98,41 @@ class RiskEngine:
             software="pacmandetections",
             software_version=None,
             description=None,
-            records=None if np.isnan(result["records"]) else int(result["records"]),
-            min_year=None if np.isnan(result["min_year"]) else int(result["min_year"]),
-            max_year=None if np.isnan(result["max_year"]) else int(result["max_year"]),
-            native=result["native"],
-            introduced=result["introduced"],
-            uncertain=result["uncertain"],
-            thermal=result["thermal"],
+            records=None if np.isnan(aggregated["records"]) else int(aggregated["records"]),
+            min_year=None if np.isnan(aggregated["min_year"]) else int(aggregated["min_year"]),
+            max_year=None if np.isnan(aggregated["max_year"]) else int(aggregated["max_year"]),
+            establishmentMeans_native=aggregated["establishmentMeans_native"],
+            establishmentMeans_introduced=aggregated["establishmentMeans_introduced"],
+            invasiveness_invasive=aggregated["invasiveness_invasive"],
+            invasiveness_concern=aggregated["invasiveness_concern"],
+            thermal=aggregated["thermal"],
+            global_impact=global_impact,
+            on_priority_list=on_priority_list,
             risk_level=None
         )
 
-        if result["introduced"]:
-            risk_analysis.risk_level = RiskLevel.HIGH
-        elif result["native"]:
-            risk_analysis.risk_level = RiskLevel.LOW
-        elif result["thermal"]:
-            risk_analysis.risk_level = RiskLevel.MEDIUM
+        risk_level = None
+
+        if on_priority_list:
+            risk_level = RiskLevel.HIGH
         else:
-            risk_analysis.risk_level = RiskLevel.LOW
+            if aggregated["establishmentMeans_native"]:
+                risk_level = RiskLevel.NONE
+            elif aggregated["establishmentMeans_introduced"]:
+                if aggregated["invasiveness_invasive"] or aggregated["invasiveness_concern"]:
+                    risk_level = RiskLevel.HIGH
+                elif global_impact:
+                    risk_level = RiskLevel.HIGH
+                else:
+                    risk_level = RiskLevel.MEDIUM
+            elif aggregated["thermal"]:
+                if global_impact:
+                    risk_level = RiskLevel.MEDIUM
+                else:
+                    risk_level = RiskLevel.LOW
+            else:
+                risk_level = RiskLevel.LOW
+
+        risk_analysis.risk_level = risk_level
 
         return risk_analysis
