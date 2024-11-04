@@ -37,6 +37,7 @@ class Media:
 
 @dataclass
 class Occurrence:
+    id: str
     scientificName: str
     AphiaID: int
     eventDate: str
@@ -53,10 +54,27 @@ class Occurrence:
     target_gene: str
     DNA_sequence: str
     identificationRemarks: str
+    organismQuantity: float
 
     def get_day(self):
         date = dateutil.parser.isoparse(self.eventDate)
         return date.strftime("%Y-%m-%d")
+
+
+@dataclass
+class Evidence:
+    AphiaID: int
+    target_gene: str
+    organismQuantity: float
+    identity: float
+    query_cover: float
+    method: str
+    date: str
+    occurrence: Occurrence
+    alternatives: int
+
+    def get_key(self):
+        return f"{self.AphiaID}_{self.target_gene}_{self.date}"
 
 
 @dataclass
@@ -77,6 +95,10 @@ class Detection:
     target_gene: str
     confidence: Confidence
     media: list[Media]
+    best_identity: float
+    best_organismQuantity: float
+    best_query_cover: float
+    best_alternatives: int
 
     def __repr__(self):
         description = f"Potential detection of {self.scientificName} with confidence {self.confidence.value} on {self.occurrences[0].get_day()}"
@@ -97,10 +119,13 @@ class Detection:
             "h3": self.h3,
             "date": self.date,
             "occurrences": [occurrence.__dict__ for occurrence in self.occurrences],
-            # "establishmentMeans": self.establishmentMeans.value,
             "target_gene": self.target_gene,
             "description": self.__repr__(),
             "confidence": self.confidence.value,
+            "best_identity": self.best_identity,
+            "best_organismQuantity": self.best_organismQuantity,
+            "best_query_cover": self.best_query_cover,
+            "best_alternatives": self.best_alternatives,
             "media": [media.__dict__ for media in self.media] if self.media else None,
         }
 

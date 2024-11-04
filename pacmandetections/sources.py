@@ -4,6 +4,7 @@ import pandas as pd
 from pacmandetections.model import Occurrence, Source
 import requests
 from typing import Generator
+from pacmandetections.util import try_float
 
 
 class PyOBISSource(Source):
@@ -63,6 +64,7 @@ class OBISAPISource(Source):
                         result["DNA_sequence"] = dna.get("DNA_sequence")
 
                 occurrence = Occurrence(
+                    id=result.get("id"),
                     scientificName=result.get("scientificName"),
                     AphiaID=result.get("speciesid"),
                     eventDate=result.get("eventDate"),
@@ -78,7 +80,8 @@ class OBISAPISource(Source):
                     datasetName=result.get("datasetName"),
                     target_gene=result.get("target_gene"),
                     DNA_sequence=result.get("DNA_sequence"),
-                    identificationRemarks=result.get("identificationRemarks")
+                    identificationRemarks=result.get("identificationRemarks"),
+                    organismQuantity=try_float(result.get("organismQuantity"))
                 )
 
                 yield occurrence
