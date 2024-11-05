@@ -208,9 +208,6 @@ class DetectionEngine:
 
             evidences = self.sort_evidence(grouped_evidence[detection_key])
 
-            if detection_key == "266492_18S_2024-02-28":
-                print("ok")
-
             # collect occurrences
 
             occurrence_ids = set()
@@ -243,12 +240,15 @@ class DetectionEngine:
             if not detection.target_gene:
                 detection.confidence = Confidence.HIGH
             elif detection.target_gene == "COI":
-                detection.confidence = Confidence.MEDIUM
-            elif detection.target_gene == "18S":
-                if detection.best_alternatives < 2:
-                    detection.confidence = Confidence.MEDIUM
-                else:
+                if detection.best_organismQuantity < 10 or detection.best_alternatives > 2 or detection.best_identity is None:
                     detection.confidence = Confidence.LOW
+                else:
+                    detection.confidence = Confidence.MEDIUM
+            elif detection.target_gene == "18S":
+                if detection.best_organismQuantity < 10 or detection.best_alternatives > 2 or detection.best_identity is None:
+                    detection.confidence = Confidence.LOW
+                else:
+                    detection.confidence = Confidence.MEDIUM
             else:
                 detection.confidence = Confidence.LOW
 
